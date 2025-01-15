@@ -4,17 +4,24 @@ import * as emailTemplates from './mail/templates';
 import { sendMail } from './mail';
 import { JobDataMap } from './create';
 import { goalPingJob } from './goalPingJob';
-import { externalTaskCheckJob, externalTasksJob } from './externalTasksJob';
+import { externalTasksJob, makeCriteriaQueue, shiftCriteriaFromQueue } from './externalTasksJob';
 
-export const email = async ({ template, data }: JobDataMap['email']) => {
+interface JobHandler<K extends keyof JobDataMap> {
+    (value: JobDataMap[K]): Promise<void> | void;
+}
+
+export const email: JobHandler<'email'> = async ({ template, data }) => {
     const renderedTemplate = await emailTemplates[template](data);
-    return sendMail(renderedTemplate);
+    sendMail(renderedTemplate);
 };
 
-export const cron = async ({ template }: JobDataMap['cron']) => {
+export const cron: JobHandler<'cron'> = async ({ template }) => {
     switch (template) {
-        case 'externalTaskCheck':
-            externalTaskCheckJob();
+        // case 'externalTaskCheck':
+        //     externalTaskCheckJob();
+        //     break;
+        case 'makeCriteriaQueue':
+            makeCriteriaQueue();
             break;
         case 'goalPing':
             goalPingJob();
@@ -24,7 +31,7 @@ export const cron = async ({ template }: JobDataMap['cron']) => {
     }
 };
 
-export const comment = async ({ activityId, description, goalId }: JobDataMap['comment']) => {
+export const comment: JobHandler<'comment'> = async ({ activityId, description, goalId }) => {
     await createComment({
         description,
         activityId,
@@ -34,6 +41,10 @@ export const comment = async ({ activityId, description, goalId }: JobDataMap['c
     });
 };
 
-export const criteriaToUpdate = async ({ id }: JobDataMap['criteriaToUpdate']) => {
+export const criteriaToUpdate: JobHandler<'criteriaToUpdate'> = async ({ id }) => {
     await externalTasksJob(id);
+};
+
+export const criteriaListToUpdate: JobHandler<'criteriaListToUpdate'> = async ({ ids }) => {
+    return shiftCriteriaFromQueue(ids);
 };

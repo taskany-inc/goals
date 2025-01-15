@@ -170,5 +170,6 @@ const userPassword = 'taskany';
         createSheep(),
         createCronJob('goalPing', '0 0 0 1 * *'),
         createCronJob('externalTaskCheck', '1/10 * * * *'),
+        createCronJob('makeCriteriaQueue', '1/10 * * * *'),
     ]);
 })();
