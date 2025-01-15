@@ -5,9 +5,17 @@ import type { JiraIssue } from '../integration/jira';
 import { jiraService } from '../integration/jira';
 import { prisma } from '../prisma';
 import { recalculateCriteriaScore } from '../recalculateCriteriaScore';
+import { safelyParseJson } from '../safelyParseJson';
 
 import { getSheep } from './sheep';
-import { castJobData, createCriteriaToUpdate, jobKind, jobState } from './create';
+import {
+    castJobData,
+    createCriteriaListToUpdate,
+    createCriteriaToUpdate,
+    JobDataMap,
+    jobKind,
+    jobState,
+} from './create';
 
 export const dayDuration = 24 * 60 * 60 * 1000;
 
@@ -253,4 +261,152 @@ export const externalTaskCheckJob = async () => {
             await createCriteriaToUpdate({ id }, index * interval);
         }
     });
+};
+
+export const makeCriteriaQueue = async () => {
+    const currentJob = await prisma.job.findFirst({
+        where: {
+            kind: 'makeCriteriaQueue',
+        },
+    });
+
+    const exstingQueueJob = await prisma.job.findFirst({
+        where: {
+            kind: jobKind.criteriaListToUpdate,
+            state: jobState.scheduled,
+        },
+    });
+
+    assert(currentJob, 'Job doesnt exists');
+    assert(jiraService.config.finishedCategory, 'Jira config is undefined');
+
+    const atYesterday = new Date();
+    atYesterday.setDate(atYesterday.getDate() - 1);
+
+    // get all incompleted exterla tasks
+    const incompletedTasks = await prisma.externalTask.findMany({
+        where: {
+            createdAt: {
+                lte: atYesterday,
+            },
+            stateCategoryId: {
+                not: jiraService.config.finishedCategory.id,
+            },
+            criteria: { some: { externalTaskId: { not: null } } },
+        },
+        select: {
+            id: true,
+            externalKey: true,
+            criteria: {
+                select: { id: true },
+            },
+        },
+    });
+
+    // check tasks status outside
+    const tasksToUpdate = await getResolvedJiraTasks(incompletedTasks.map(({ externalKey }) => externalKey));
+
+    if (tasksToUpdate == null || tasksToUpdate.length === 0) {
+        return;
+    }
+
+    const updatedTasks = await updateExternalTasks(tasksToUpdate);
+
+    if (updatedTasks.length === 0) {
+        return;
+    }
+
+    // pick criteria to update by completedTasks
+    const updatedkeys = new Set(updatedTasks.map(({ externalKey }) => externalKey));
+
+    const toUpdateCriteriaByTasks = incompletedTasks
+        .filter(({ externalKey }) => updatedkeys.has(externalKey))
+        .reduce((set, current) => {
+            for (const { id } of current.criteria) {
+                set.add(id);
+            }
+            return set;
+        }, new Set<string>());
+
+    if (exstingQueueJob == null) {
+        await createCriteriaListToUpdate({ ids: Array.from(toUpdateCriteriaByTasks) });
+
+        return;
+    }
+
+    const jobData = safelyParseJson<JobDataMap['criteriaListToUpdate']>(String(exstingQueueJob.data)) ?? { ids: [] };
+
+    prisma.job.update({
+        where: { id: exstingQueueJob.id },
+        data: {
+            state: jobState.scheduled,
+            data: { ids: jobData.ids.concat(Array.from(toUpdateCriteriaByTasks)) },
+        },
+    });
+};
+
+export const shiftCriteriaFromQueue = async ([current, ...queue]: string[]) => {
+    if (!current) return;
+
+    const sheep = await getSheepOrThrow();
+
+    const currentCriteria = await prisma.goalAchieveCriteria.findUnique({
+        where: { id: current },
+        select: {
+            id: true,
+            goalId: true,
+            externalTaskId: true,
+        },
+    });
+
+    assert(currentCriteria, 'Criteria doesnt exist');
+    assert(currentCriteria.externalTaskId, 'This criteria without linked external task');
+
+    const externalTask = await prisma.externalTask.findUnique({
+        where: { id: currentCriteria.externalTaskId },
+    });
+
+    assert(externalTask, 'This criteria without linked external task');
+
+    const isTaskComplete = jiraService.checkCompletedStatus({
+        statusName: externalTask.state,
+        statusCategory: externalTask.stateCategoryId,
+        resolutionName: externalTask.resolution,
+    });
+
+    assert(!isTaskComplete, 'External task have complete status');
+
+    await prisma.goalAchieveCriteria.update({
+        where: { id: currentCriteria.id },
+        data: { isDone: true },
+    });
+
+    await prisma.goalHistory.create({
+        data: {
+            goalId: currentCriteria.goalId,
+            subject: 'criteria',
+            action: 'complete',
+            previousValue: null,
+            nextValue: current,
+            activityId: sheep,
+        },
+    });
+
+    await recalculateCriteriaScore(currentCriteria.goalId)
+        .recalcCurrentGoalScore()
+        .recalcLinkedGoalsScores()
+        .recalcAverageProjectScore()
+        .run();
+
+    if (queue.length) {
+        prisma.job.create({
+            data: {
+                kind: jobKind.criteriaListToUpdate,
+                state: jobState.scheduled,
+                data: {
+                    ids: queue,
+                },
+            },
+        });
+    }
 };

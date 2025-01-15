@@ -16,6 +16,7 @@ export enum jobKind {
     cron = 'cron',
     comment = 'comment',
     criteriaToUpdate = 'criteriaToUpdate',
+    criteriaListToUpdate = 'criteriaListToUpdate',
 }
 
 type Templates = typeof templates;
@@ -27,7 +28,7 @@ export interface JobDataMap {
         data: any;
     };
     cron: {
-        template: 'goalPing' | 'externalTaskCheck';
+        template: 'goalPing' | 'externalTaskCheck' | 'makeCriteriaQueue';
     };
     comment: {
         goalId: string;
@@ -36,6 +37,9 @@ export interface JobDataMap {
     };
     criteriaToUpdate: {
         id: string;
+    };
+    criteriaListToUpdate: {
+        ids: string[];
     };
 }
 
@@ -115,4 +119,8 @@ export function createCommentJob(data: JobDataMap['comment'], delay?: number) {
 
 export const createCriteriaToUpdate = (data: JobDataMap['criteriaToUpdate'], delay?: number) => {
     return createJob('criteriaToUpdate', { data, delay });
+};
+
+export const createCriteriaListToUpdate = (data: JobDataMap['criteriaListToUpdate'], delay?: number) => {
+    return createJob('criteriaListToUpdate', { data, delay });
 };
